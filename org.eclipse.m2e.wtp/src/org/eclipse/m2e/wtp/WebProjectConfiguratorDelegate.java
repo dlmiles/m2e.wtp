@@ -4,6 +4,10 @@
  * are made available under the terms of the Eclipse Public License v1.0
  * which accompanies this distribution, and is available at
  * http://www.eclipse.org/legal/epl-v10.html
+ *
+ * Contributors:
+ *     Darryl L. Miles <darryl.miles@darrylmiles.org> - bug fixes
+ *
  *******************************************************************************/
 
 package org.eclipse.m2e.wtp;
@@ -373,7 +377,10 @@ class WebProjectConfiguratorDelegate extends AbstractProjectConfiguratorDelegate
     }
     
     FileNameMapping fileNameMapping = config.getFileNameMapping();
-    String targetDir = mavenProject.getBuild().getDirectory();
+    IPath m2eWtpFolderPath = ProjectUtils.getM2eclipseWtpFolder(mavenProject, project);
+    m2eWtpFolderPath = project.getFolder(m2eWtpFolderPath).getLocation();
+    IPath targetPath = m2eWtpFolderPath.append(MavenWtpConstants.JAR_RENAME_FOLDER);
+    String targetDir = targetPath.toOSString();
 
     // first pass removes projects, adds non-dependency attribute and collects colliding filenames
     Iterator<IClasspathEntryDescriptor> iter = classpath.getEntryDescriptors().iterator();
@@ -403,10 +410,11 @@ class WebProjectConfiguratorDelegate extends AbstractProjectConfiguratorDelegate
       // if it doesn't, copy and rename the artifact under the build dir
       String fileName = descriptor.getPath().lastSegment(); 
       if (!deployedName.equals(fileName)) {
-        IPath newPath = descriptor.getPath().removeLastSegments(1).append(deployedName);
-        if (!new File(newPath.toOSString()).exists()) {
-          newPath = renameArtifact(targetDir, descriptor.getPath(), deployedName );
-        }
+        // The renameArtifact() method already checks existence and timestamp for us,
+        //  it is important the timestamp is checked each time as it is possible to be
+        //  working with a 0.0.1-SNAPSHOT jar from a repository that you keep
+        //  installing a new copy of while you develop/test it.
+        IPath newPath = renameArtifact(targetDir, descriptor.getPath(), deployedName );
         if (newPath != null) {
           descriptor.setPath(newPath);
         }
@@ -433,19 +441,36 @@ class WebProjectConfiguratorDelegate extends AbstractProjectConfiguratorDelegate
         }
       }
     }
+
+    // We do this at the end, this causes any JAR items we copied to be marked as
+    //  hidden=true and derived=true.
+    ProjectUtils.hideM2eclipseWtpFolder(mavenProject, project);
   }
 
-
+  // returns null on error, or when the copy was not performed due to being identical
   private IPath renameArtifact(String targetDir, IPath source, String newName) {
     File src = new File(source.toOSString());
+
+    File dstDir = new File(targetDir);
+    if (!dstDir.exists()) {
+      try {
+        if (src.isFile() && src.canRead()) {
+          if(!dstDir.mkdirs()) // do this once rather than for each JAR
+            throw new Exception("mkdirs(): " + dstDir);
+        }
+      } catch(Exception ex) {
+        LOG.error("Mkdirs failed", ex);
+      }
+    }
+
     File dst = new File(targetDir, newName);
     try {
       if (src.isFile() && src.canRead()) {
         if (isDifferent(src, dst)) { // uses lastModified
           FileUtils.copyFile(src, dst);
           dst.setLastModified(src.lastModified());
+          return Path.fromOSString(dst.getCanonicalPath());
         }
-        return Path.fromOSString(dst.getCanonicalPath());
       }
     } catch(IOException ex) {
       LOG.error("File copy failed", ex);
